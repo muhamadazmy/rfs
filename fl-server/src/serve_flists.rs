@@ -14,6 +14,7 @@ use percent_encoding::percent_decode;
 
 use crate::{
     config,
+    handlers::Filter,
     response::{
         DirListTemplate, DirLister, ErrorTemplate, FileInfo, ResponseError, ResponseResult,
         TemplateErr,
@@ -47,7 +48,7 @@ pub async fn serve_flists(
 
                     match cur_path.is_dir() {
                         true => {
-                            let rs = visit_dir_one_level(&full_path, &state).await;
+                            let rs = visit_dir_one_level(&full_path, &state, None).await;
                             match rs {
                                 Ok(files) => Ok(ResponseResult::DirTemplate(DirListTemplate {
                                     lister: DirLister { files },
@@ -98,6 +99,7 @@ fn validate_path(path: &str) -> io::Result<PathBuf> {
 pub async fn visit_dir_one_level<P: AsRef<std::path::Path>>(
     path: P,
     state: &Arc<config::AppState>,
+    filter: Option<Filter>,
 ) -> io::Result<Vec<FileInfo>> {
     let path = path.as_ref();
     let mut dir = tokio::fs::read_dir(path).await?;
@@ -107,6 +109,7 @@ pub async fn visit_dir_one_level<P: AsRef<std::path::Path>>(
         let path_uri = child.path().to_string_lossy().to_string();
         let is_file = child.file_type().await?.is_file();
         let name = child.file_name().to_string_lossy().to_string();
+        let size = child.metadata().await?.len();
 
         let mut progress = 0.0;
         if is_file {
@@ -131,11 +134,31 @@ pub async fn visit_dir_one_level<P: AsRef<std::path::Path>>(
             }
         }
 
+        if let Some(ref filter_files) = filter {
+            if let Some(ref filter_name) = filter_files.name {
+                if filter_name.clone() != name {
+                    continue;
+                }
+            }
+
+            if let Some(ref filter_max_size) = filter_files.max_size {
+                if filter_max_size.clone() < size as usize {
+                    continue;
+                }
+            }
+
+            if let Some(ref filter_min_size) = filter_files.min_size {
+                if filter_min_size.clone() > size as usize {
+                    continue;
+                }
+            }
+        }
+
         files.push(FileInfo {
             name,
             path_uri,
             is_file,
-            size: child.metadata().await?.len(),
+            size: size,
             last_modified: child
                 .metadata()
                 .await?

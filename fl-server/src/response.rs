@@ -124,7 +124,7 @@ impl IntoResponse for ResponseResult {
 
 //////// TEMPLATES ////////
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, Clone, Debug, ToSchema)]
 pub struct FileInfo {
     pub name: String,
     pub path_uri: String,

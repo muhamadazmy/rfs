@@ -1,6 +1,6 @@
 use anyhow::Error;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::IntoResponse,
     Extension, Json,
 };
@@ -72,6 +72,23 @@ pub enum FlistState {
 pub struct FlistStateInfo {
     msg: String,
     progress: f32,
+}
+
+const DEFAULT_LIMIT: usize = 10;
+const DEFAULT_PAGE: usize = 1;
+
+#[derive(Deserialize)]
+pub struct Pagination {
+    page: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Filter {
+    pub max_size: Option<usize>,
+    pub min_size: Option<usize>,
+    username: Option<String>,
+    pub name: Option<String>,
 }
 
 #[utoipa::path(
@@ -337,11 +354,27 @@ pub async fn get_flist_state_handler(
 	)
 )]
 #[debug_handler]
-pub async fn list_flists_handler(State(state): State<Arc<config::AppState>>) -> impl IntoResponse {
+pub async fn list_flists_handler(
+    State(state): State<Arc<config::AppState>>,
+    pagination: Query<Pagination>,
+    filter: Query<Filter>,
+) -> impl IntoResponse {
     let mut flists: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
+    let pagination: Pagination = pagination.0;
+    let page = pagination.page.unwrap_or(DEFAULT_PAGE);
+    let limit = pagination.limit.unwrap_or(DEFAULT_LIMIT);
+
+    if page == 0 {
+        return Err(ResponseError::BadRequest(
+            "requested page should be nonzero positive number".to_string(),
+        ));
+    }
+
+    let filter: Filter = filter.0;
+
     let rs: Result<Vec<FileInfo>, std::io::Error> =
-        visit_dir_one_level(&state.config.flist_dir, &state).await;
+        visit_dir_one_level(&state.config.flist_dir, &state, None).await;
 
     let files = match rs {
         Ok(files) => files,
@@ -353,9 +386,30 @@ pub async fn list_flists_handler(State(state): State<Arc<config::AppState>>) -> 
 
     for file in files {
         if !file.is_file {
-            let flists_per_username = visit_dir_one_level(&file.path_uri, &state).await;
+            let flists_per_username =
+                visit_dir_one_level(&file.path_uri, &state, Some(filter.clone())).await;
+
+            if let Some(ref filter_username) = filter.username {
+                if filter_username.clone() != file.name {
+                    continue;
+                }
+            }
+
             match flists_per_username {
-                Ok(files) => flists.insert(file.name, files),
+                Ok(files) => {
+                    let username = file.name;
+                    flists.insert(username.clone(), Vec::new());
+
+                    let start = limit * (page - 1);
+                    let end = limit * page;
+                    if files.len() > start {
+                        if files.len() >= end {
+                            flists.insert(username, files[start..end].to_vec());
+                        } else {
+                            flists.insert(username, files[start..].to_vec());
+                        }
+                    }
+                }
                 Err(e) => {
                     log::error!("failed to list flists per username with error: {}", e);
                     return Err(ResponseError::InternalServerError);
